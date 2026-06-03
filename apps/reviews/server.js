@@ -82,7 +82,11 @@ const db = await openPg("reviews", SCHEMA);
 
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const token = () => crypto.randomBytes(9).toString("base64url");
-const PAID = new Set(["paid", "confirmed", "prepared", "shipped", "delivered", "completed", "fulfilled"]);
+// Inkress order status codes: 3=paid, 4=confirmed, 9=completed.
+const PAID = new Set([3, 4, 9]);
+const isPaid = (o) => PAID.has(Number(o.status));
+const custName = (c) =>
+  [c?.first_name, c?.last_name].filter(Boolean).join(" ") || c?.username || c?.email || "Customer";
 
 async function getConfig(mid) {
   let c = await db.one("SELECT * FROM config WHERE merchant_id=$1", [mid]);
@@ -139,15 +143,14 @@ app.post("/api/sync", core.requireSession, async (req, res) => {
     const orders = r?.result?.entries || r?.result || [];
     let created = 0;
     for (const o of orders) {
-      const status = (o.status_name || o.status || "").toString().toLowerCase();
-      if (!PAID.has(status)) continue;
+      if (!isPaid(o)) continue;
       const ref = String(o.id ?? o.code ?? "");
       if (!ref) continue;
       const c = o.customer || {};
       const r2 = await db.run(
         `INSERT INTO requests (merchant_id, order_ref, customer_ref, contact, customer_name, token)
          VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (merchant_id, order_ref) DO NOTHING`,
-        [mid, ref, String(c.id ?? o.customer_id ?? ""), c.phone || c.email || null, c.name || o.customer_name || "Customer", token()],
+        [mid, ref, String(c.id ?? o.customer_id ?? ""), c.phone || c.email || null, custName(c), token()],
       );
       if (r2.rowCount) created += 1;
     }
