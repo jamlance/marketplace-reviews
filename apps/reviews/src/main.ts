@@ -155,12 +155,26 @@ async function renderRequests(host: HTMLElement) {
               { head: "When", cell: (r) => fmtDate(r.created_at) },
             ],
             rows: d.requests,
-            rowActions: (r) =>
-              h("button", { class: "secondary", onClick: () => copyLink(r.link) }, "Copy link"),
+            rowActions: (r) => {
+              const btns = [];
+              if (r.contact && r.contact.includes("@"))
+                btns.push(h("button", { class: "primary", onClick: () => doSend(r, host) }, "Send email"));
+              btns.push(h("button", { class: "secondary", onClick: () => copyLink(r.link) }, "Copy link"));
+              return h("div", { class: "bv-row" }, ...btns);
+            },
           })
         : emptyState({ icon: "send", title: "No pending requests", text: "Create requests from recent orders on the Overview tab." }),
     }),
   );
+}
+
+function doSend(r: ReqRow, host: HTMLElement) {
+  bvApi(`/api/requests/${r.id}/send`, { method: "POST" })
+    .then(() => {
+      flash(`Review request emailed to ${r.contact}.`, "success");
+      renderRequests(host);
+    })
+    .catch((e) => flash(e?.message || "Couldn't send — use Copy link instead.", "error"));
 }
 
 function copyLink(link: string) {

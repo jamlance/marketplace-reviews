@@ -20,6 +20,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { mountAppCore } from "@inkress/apps-core";
+import { sendEmail, sesConfigured } from "@inkress/apps-core/ses";
 import { openPg } from "@inkress/apps-core/pgdb";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -166,6 +167,35 @@ app.get("/api/requests", core.requireSession, async (req, res) => {
     [req.session.merchantId],
   );
   res.json({ requests: rows.map((r) => ({ ...r, link: `${BASE}/r/${r.token}` })) });
+});
+
+// Email the review link to the customer (real send via SES). Degrades cleanly
+// if the request has no email or email isn't configured — the merchant can
+// still Copy link.
+app.post("/api/requests/:id/send", core.requireSession, async (req, res) => {
+  const mid = req.session.merchantId;
+  const id = parseInt(req.params.id, 10) || 0;
+  const r = await db.one("SELECT * FROM requests WHERE id=$1 AND merchant_id=$2", [id, mid]);
+  if (!r) return res.status(404).json({ error: "not_found" });
+  const email = (r.contact || "").includes("@") ? r.contact : null;
+  if (!email) return res.status(422).json({ error: "no_email", message: "This request has no email address." });
+  if (!sesConfigured()) return res.status(503).json({ error: "email_unavailable", message: "Email sending isn't set up for this app yet." });
+  const m = req.session.data?.merchant || req.session.merchant || {};
+  const store = String(m.name || "our store");
+  const who = String(r.customer_name || "there");
+  const link = `${BASE}/r/${r.token}`;
+  try {
+    await sendEmail({
+      to: email,
+      subject: `How was your experience with ${store}?`,
+      html: `<p>Hi ${who},</p><p>Thanks for your recent order with <strong>${store}</strong>. We'd love a quick review.</p><p><a href="${link}" style="display:inline-block;background:#0d9488;color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px">Leave a review</a></p><p style="color:#667">or open: ${link}</p>`,
+      text: `Hi ${who}, thanks for your order with ${store}. Leave a quick review: ${link}`,
+    });
+    await db.run("UPDATE requests SET status='sent' WHERE id=$1", [id]);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(502).json({ error: "send_failed", message: e?.message || "Couldn't send the email." });
+  }
 });
 
 app.get("/api/reviews", core.requireSession, async (req, res) => {
